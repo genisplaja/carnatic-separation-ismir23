@@ -50,15 +50,8 @@ class Trainer:
         self.eval_intval = config.train.eval_intval // config.data.batch
         self.ckpt_intval = config.train.ckpt_intval // config.data.batch
 
-        self.train_log = tf.summary.create_file_writer(
-            os.path.join(config.train.log, config.train.name, 'train'))
-        self.test_log = tf.summary.create_file_writer(
-            os.path.join(config.train.log, config.train.name, 'test'))
-
         self.ckpt_path = os.path.join(
             config.train.ckpt, config.train.name, config.train.name)
-
-        self.alpha_bar = np.linspace(1, 0, config.model.iter + 1)
 
     @staticmethod
     def tf_log10(x):
@@ -67,29 +60,12 @@ class Trainer:
         return numerator / denominator
 
     def compute_loss(self, mixture, vocals): #, accomp):
-        """Compute loss for noise estimation.
-        Args:
-            signal: tf.Tensor, [B, T], raw audio signal mixture.
-            signal: tf.Tensor, [B, T], raw audio signal vocals.
-        Returns:
-            loss: tf.Tensor, [], L1-loss between noise and estimation.
-        """
-        bsize = tf.shape(vocals)[0]
-        # [B]
-        timesteps = tf.random.uniform(
-            [bsize], 1, self.config.model.iter + 1, dtype=tf.int32)
-
-        # [B]
-        noise_level = tf.gather(self.alpha_bar, timesteps)
-        noise_level_next = tf.gather(self.alpha_bar, timesteps - 1)
-
-        # [B, T], [B, T]
-        noised = self.model.diffusion(mixture, vocals, noise_level)
-        noised_next = self.model.diffusion(mixture, vocals, noise_level_next)
         # [B, T]
-        est = self.model.pred_noise(noised, timesteps)
+        mix_mag, mix_phase = self.compute_stft(mixture)
+        voc_mag, voc_phase = self.compute_stft(vocals)
+        est = self.model(mix_mag)
         # []
-        l1_loss = tf.reduce_mean(tf.abs(est - noised_next))
+        l1_loss = tf.reduce_mean(tf.abs(est - voc_mag))
         return l1_loss
 
 
@@ -150,9 +126,8 @@ class Trainer:
                     less_loss = loss
                     less_train_loss = train_loss
 
-            with self.test_log.as_default():
-                if count%1 == 0:
-                    best_SDR, best_step = self.eval(best_SDR, best_step, step)
+            if count%1 == 0:
+                best_SDR, best_step = self.eval(best_SDR, best_step, step)
             count += 1
 
 

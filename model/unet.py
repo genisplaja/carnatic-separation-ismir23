@@ -14,15 +14,6 @@ import tensorflow_addons as tfa
 from tensorflow.keras import layers, models
 
 
-class TimestepEmbedding(layers.Layer):
-    def __init__(self, dim):
-        super(TimestepEmbedding, self).__init__()
-        self.dim = dim
-
-    def call(self, t):
-        return get_timestep_embedding(t, self.dim)
-
-
 class Upsample(layers.Layer):
     def __init__(self, channels, with_conv=True):
         super(Upsample, self).__init__()
@@ -88,15 +79,12 @@ class ResNetBlock(layers.Layer):
         self.dense4 = layers.Dense(self.out_ch)
 
 
-    def call(self, inputs, temb, cond=None):
+    def call(self, inputs, cond=None):
         x = inputs
 
         x = self.group_norm1(x)
         x = self.non_linear1(x)
         x = self.conv1(x)
-
-        # Add in timestep embedding.
-        x += self.dense2(self.non_linear2(temb))[:, None, None, :]
 
         x = self.group_norm3(x)
         x = self.non_linear3(x)
@@ -155,12 +143,6 @@ class UNet(models.Model):
         self.dropout = dropout
         self.resample_with_conv = resample_with_conv
         self.num_resolutions = len(self.ch_mult)
-
-        self.in_embed = [
-            TimestepEmbedding(self.channels),
-            layers.Dense(self.channels*4),
-            layers.Activation("swish"),
-            layers.Dense(self.channels*4)]
 
         self.upsample_cond = [
             tf.keras.layers.Conv2DTranspose(self.channels*2, [32, 3], [1, 1], padding='same') for _ in range(1)]
@@ -249,7 +231,7 @@ class UNet(models.Model):
         ]
 
 
-    def call(self, inputs, temb, cond=None):
+    def call(self, inputs, cond=None):
 
         x = inputs[..., None]
 
@@ -267,24 +249,22 @@ class UNet(models.Model):
                 cond = tf.nn.leaky_relu(downsample(cond), 0.4)
             cond = tf.transpose(cond, [0, 2, 1, 3])
 
-        for lay in self.in_embed:
-            temb = lay(temb)
         # Downsampling.
         hs = [self.pre_process(x)]
         for block in self.downsampling:
             for idx_block in range(self.num_res_blocks):
                 if isinstance(block[idx_block], list):
                     if cond is not None:
-                        h = block[idx_block][0](hs[-1], temb, cond)
+                        h = block[idx_block][0](hs[-1], cond)
                     else:
-                        h = block[idx_block][0](hs[-1], temb)
+                        h = block[idx_block][0](hs[-1])
                     h = block[idx_block][1](h)
                     hs.append(h)
                 else:
                     if cond is not None:
-                        h = block[idx_block](hs[-1], temb, cond)
+                        h = block[idx_block](hs[-1], cond)
                     else:
-                        h = block[idx_block](hs[-1], temb)
+                        h = block[idx_block](hs[-1])
                     hs.append(h)
             if len(block) > self.num_res_blocks:
                 for extra_lay in block[self.num_res_blocks:]:
@@ -293,7 +273,7 @@ class UNet(models.Model):
         # Middle.
         h = hs[-1]
         for _, lay in enumerate(self.middle):
-            h = lay(h, temb)
+            h = lay(h)
 
         # Upsampling.
         for block in self.upsampling:
@@ -301,15 +281,15 @@ class UNet(models.Model):
             for idx_block in range(self.num_res_blocks+1):
                 if isinstance(block[idx_block], list):
                     if cond is not None:
-                        h = block[idx_block][0](tf.concat([h, hs.pop()], axis=-1), temb, cond)
+                        h = block[idx_block][0](tf.concat([h, hs.pop()], axis=-1), cond)
                     else: 
-                        h = block[idx_block][0](tf.concat([h, hs.pop()], axis=-1), temb)
+                        h = block[idx_block][0](tf.concat([h, hs.pop()], axis=-1))
                     h = block[idx_block][1](h)
                 else:
                     if cond is not None:
-                        h = block[idx_block](tf.concat([h, hs.pop()], axis=-1), temb, cond)
+                        h = block[idx_block](tf.concat([h, hs.pop()], axis=-1), cond)
                     else: 
-                        h = block[idx_block](tf.concat([h, hs.pop()], axis=-1), temb)
+                        h = block[idx_block](tf.concat([h, hs.pop()], axis=-1))
             # Upsample.
             if len(block) > self.num_res_blocks+1:
                 for extra_lay in block[self.num_res_blocks+1:]:
